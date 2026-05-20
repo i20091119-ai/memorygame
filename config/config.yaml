@@ -1,0 +1,58 @@
+version: "1.2"
+
+game:
+  max_level: 20
+  base_sequence_length: 2
+  per_button_timeout_ms: 10000
+  show_on_ms: 500
+  show_off_ms: 200
+  ready_countdown_sec: 3
+  level_clear_duration_ms: 1500
+  game_over_display_ms: 3000
+  attract_idle_threshold_sec: 30
+  rng_max_consecutive_same: 3
+
+colors:
+  RED:    { active: "#FF3030", dim: "#5C1A1A", disabled: "#2C2C2C" }
+  BLUE:   { active: "#3060FF", dim: "#1A2C5C", disabled: "#2C2C2C" }
+  YELLOW: { active: "#FFE030", dim: "#5C5520", disabled: "#2C2C2C" }
+  GREEN:  { active: "#30FF60", dim: "#1A5C2C", disabled: "#2C2C2C" }
+
+level_color_activation:
+  - { level: 1, colors: [RED, BLUE] }
+  - { level: 2, colors: [RED, BLUE, YELLOW] }
+  - { level: 3, colors: [RED, BLUE, YELLOW, GREEN] }
+
+ui:
+  screen_resolution: [1920, 1080]
+  fullscreen: true
+  min_font_pt: 36
+  show_colorblind_shapes: false
+  title: "경남수학문화관 기억톡톡"
+  font_path: ""
+
+audio:
+  enabled: false
+  volume_percent: 70
+  notes:
+    RED: "C4"
+    BLUE: "E4"
+    YELLOW: "G4"
+    GREEN: "C5"
+
+scoreboard:
+  path: "/home/arduino/scoreboard.json"
+  max_entries: 10
+
+logging:
+  path: "/home/arduino/game.log"
+  max_size_mb: 10
+  backup_count: 3
+  level: "INFO"
+
+rpc:
+  serial_port: "/dev/ttyACM0"
+  baud_rate: 115200
+  simulation_mode: false
+  reconnect_max_attempts: 3
+  mcu_min_fw_major: 1
