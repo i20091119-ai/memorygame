@@ -201,16 +201,14 @@ static void pollButtons() {
     } else if (now - btn[i].lastChangeMs >= DEBOUNCE_MS &&
                btn[i].stable != reading) {
       btn[i].stable = reading;
-      if (reading) {  // rising edge (pressed)
-        if (inputMode == IM_ARMED && armedColors[i]) {
-          Serial.print("BTN ");
-          Serial.print(COLOR_CHARS[i]);
-          Serial.print(' ');
-          Serial.println(now);
-        } else if (inputMode == IM_ARMED && !armedColors[i]) {
-          // inactive color rejection blink
-          pulseLed(i, 50);
-        }
+      // Always emit BTN/REL so MPU can detect hold combos in any state.
+      Serial.print(reading ? "BTN " : "REL ");
+      Serial.print(COLOR_CHARS[i]);
+      Serial.print(' ');
+      Serial.println(now);
+      // Inactive-color rejection blink only while armed.
+      if (reading && inputMode == IM_ARMED && !armedColors[i]) {
+        pulseLed(i, 50);
       }
     }
   }

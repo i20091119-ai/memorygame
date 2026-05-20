@@ -41,12 +41,15 @@ def test_attract_to_ready_on_button(game):
     game.start()
     assert game.state == State.ATTRACT
     game._on_button("RED", 0)
+    assert game.state == State.ATTRACT  # press alone is not enough
+    game._on_button_release("RED", 0)
     assert game.state == State.READY
 
 
 def test_full_level_clear_advances(game):
     game.start()
     game._on_button("RED", 0)
+    game._on_button_release("RED", 0)
     game.tick()  # READY -> SHOW_SEQUENCE
     assert game.state == State.SHOW_SEQUENCE
     _drive_show(game)
@@ -63,6 +66,7 @@ def test_full_level_clear_advances(game):
 def test_wrong_input_triggers_game_over(game):
     game.start()
     game._on_button("RED", 0)
+    game._on_button_release("RED", 0)
     game.tick()
     _drive_show(game)
     expected = game.session.sequence[0]
@@ -75,6 +79,7 @@ def test_wrong_input_triggers_game_over(game):
 def test_inactive_color_ignored_in_level_1(game):
     game.start()
     game._on_button("RED", 0)
+    game._on_button_release("RED", 0)
     game.tick()
     _drive_show(game)
     # Level 1 -> active = RED, BLUE. YELLOW is inactive: must be a no-op.
@@ -86,6 +91,7 @@ def test_inactive_color_ignored_in_level_1(game):
 def test_timeout_triggers_game_over(game, cfg):
     game.start()
     game._on_button("RED", 0)
+    game._on_button_release("RED", 0)
     game.tick()
     _drive_show(game)
     game.session.timeout_deadline_ts = time.monotonic() - 1
@@ -97,6 +103,7 @@ def test_timeout_triggers_game_over(game, cfg):
 def test_game_over_to_nickname_if_qualifies(game):
     game.start()
     game._on_button("RED", 0)
+    game._on_button_release("RED", 0)
     game.tick()
     _drive_show(game)
     for c in list(game.session.sequence):
@@ -115,6 +122,7 @@ def test_game_over_to_nickname_if_qualifies(game):
 def test_nickname_buffer_limits(game):
     game.start()
     game._on_button("RED", 0)
+    game._on_button_release("RED", 0)
     game.tick()
     _drive_show(game)
     for c in list(game.session.sequence):

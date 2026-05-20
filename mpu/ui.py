@@ -1,10 +1,16 @@
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pygame
 
 from .config import COLORS, AppConfig
 from .game import Game, State
+from .selftest import (
+    APP_VERSION,
+    SUBMODE_CONFIRM,
+    SUBMODE_MAIN,
+    SUBMODE_TIME_SET,
+)
 from . import virtual_keyboard as vk
 
 COLOR_POSITION = {"RED": 0, "BLUE": 1, "YELLOW": 2, "GREEN": 3}
@@ -52,6 +58,8 @@ class UI:
         self.flash_until: dict[str, float] = {}
         self.keyboard: List[vk.Key] = vk.build_keyboard(w, h)
         self.clock = pygame.time.Clock()
+        self.selftest_buttons: Dict[str, pygame.Rect] = {}
+        self.time_buttons: Dict[str, pygame.Rect] = {}
 
     def _make_font(self, path: Optional[str], size: int) -> pygame.font.Font:
         if path:
@@ -84,6 +92,8 @@ class UI:
                         running = False
                     else:
                         self._handle_keydown(event)
+                elif event.type == pygame.KEYUP:
+                    self._handle_keyup(event)
                 elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
                     self._handle_pointer(event)
 
@@ -107,6 +117,11 @@ class UI:
                 self.game.nickname_key(event.unicode.upper())
             return
 
+        # Dev shortcut: F12 jumps into self-test from ATTRACT.
+        if event.key == pygame.K_F12:
+            self.game.trigger_selftest()
+            return
+
         color = KEY_TO_COLOR.get(event.key)
         if color and hasattr(self.game.bridge, "emit_button"):
             self.game.bridge.emit_button(color)
@@ -114,6 +129,11 @@ class UI:
         elif color:
             self.game.touch_input_color(color)
             self.flash(color)
+
+    def _handle_keyup(self, event) -> None:
+        color = KEY_TO_COLOR.get(event.key)
+        if color and hasattr(self.game.bridge, "emit_button_release"):
+            self.game.bridge.emit_button_release(color)
 
     def _handle_pointer(self, event) -> None:
         if event.type == pygame.FINGERDOWN:
@@ -127,6 +147,10 @@ class UI:
             key = vk.hit_test(self.keyboard, x, y, now_ms)
             if key:
                 self.game.nickname_key(key.value)
+            return
+
+        if self.game.state == State.SELFTEST:
+            self._handle_selftest_click(x, y)
             return
 
         color = self._hit_block(x, y)
@@ -177,6 +201,11 @@ class UI:
             self._draw_game(big_overlay="GAME OVER")
         elif state == State.NICKNAME_INPUT:
             self._draw_nickname()
+        elif state == State.SELFTEST:
+            self._draw_selftest()
+
+        if state == State.ATTRACT:
+            self._draw_selftest_hold_hint()
 
     def _draw_attract(self) -> None:
         self._cycle_attract_flash()
@@ -307,3 +336,241 @@ class UI:
             pygame.draw.rect(self.screen, (120, 120, 130), k.rect, width=2, border_radius=12)
             label = self.font_sm.render(k.label, True, fg)
             self.screen.blit(label, label.get_rect(center=(kx + kw // 2, ky + kh // 2)))
+
+    # ------------------------------------------------------------------ selftest
+
+    def _draw_selftest_hold_hint(self) -> None:
+        held = self.game.held
+        from .game import SELFTEST_HOLD_COMBO, SELFTEST_HOLD_SEC
+
+        if not SELFTEST_HOLD_COMBO.issubset(held) or self.game.combo_hold_started_at is None:
+            return
+        elapsed = time.monotonic() - self.game.combo_hold_started_at
+        if elapsed < 0.5:
+            return
+        rem = max(0.0, SELFTEST_HOLD_SEC - elapsed)
+        msg = f"자가진단 모드 진입까지 {rem:0.1f}s"
+        text = self.font_md.render(msg, True, (255, 230, 160))
+        bg = pygame.Surface((text.get_width() + 60, text.get_height() + 30))
+        bg.fill((20, 20, 30))
+        bg.set_alpha(220)
+        rect = bg.get_rect(center=(self.w // 2, self.h // 2))
+        self.screen.blit(bg, rect)
+        self.screen.blit(text, text.get_rect(center=rect.center))
+
+    def _draw_selftest(self) -> None:
+        st = self.game.selftest
+        if st.submode == SUBMODE_CONFIRM:
+            self._draw_selftest_main()
+            self._draw_selftest_confirm()
+        elif st.submode == SUBMODE_TIME_SET:
+            self._draw_selftest_time_set()
+        else:
+            self._draw_selftest_main()
+
+    def _draw_selftest_main(self) -> None:
+        st = self.game.selftest
+        self.screen.fill((14, 16, 24))
+
+        header = self.font_lg.render("자가진단 모드 (SELF-TEST)", True, (240, 240, 240))
+        self.screen.blit(header, header.get_rect(midtop=(self.w // 2, 40)))
+
+        version_lines = [
+            f"App: {APP_VERSION}",
+            f"MCU FW: {st.mcu_fw_version}",
+        ]
+        for i, line in enumerate(version_lines):
+            t = self.font_sm.render(line, True, (200, 200, 220))
+            self.screen.blit(t, (60, 180 + i * 50))
+
+        # Button status panel
+        bx, by, bw, bh = 60, 320, self.w - 120, 220
+        pygame.draw.rect(self.screen, (28, 30, 42), (bx, by, bw, bh), border_radius=16)
+        title = self.font_md.render("버튼/LED 테스트 — 각 버튼을 눌러 확인", True, (240, 240, 240))
+        self.screen.blit(title, (bx + 24, by + 16))
+
+        cell_w = (bw - 48) // 4
+        for i, c in enumerate(COLORS):
+            cx = bx + 24 + i * cell_w
+            cy = by + 80
+            now = time.monotonic()
+            recent = now - st.last_press_ts[c] < 0.5
+            base = self._color(c, "active" if recent else "dim")
+            sweep_on = COLORS[(st.led_sweep_idx - 1) % 4] == c and (now - st.led_sweep_at) < 0.4
+            if sweep_on:
+                base = self._color(c, "active")
+            pygame.draw.rect(self.screen, base, (cx, cy, cell_w - 20, 100), border_radius=12)
+            pygame.draw.rect(self.screen, (200, 200, 200), (cx, cy, cell_w - 20, 100), width=2, border_radius=12)
+            label = self.font_sm.render(c, True, (255, 255, 255))
+            self.screen.blit(label, label.get_rect(center=(cx + (cell_w - 20) // 2, cy + 30)))
+            cnt = self.font_xs.render(f"× {st.button_counts[c]}", True, (255, 255, 255))
+            self.screen.blit(cnt, cnt.get_rect(center=(cx + (cell_w - 20) // 2, cy + 75)))
+
+        # Action buttons
+        actions = [
+            ("RESET", "RESET SCORES", (200, 80, 80)),
+            ("TIME", "SET TIME", (80, 140, 200)),
+            ("SHUTDOWN", "SHUTDOWN", (180, 100, 60)),
+            ("REBOOT", "REBOOT", (180, 140, 60)),
+            ("EXIT", "EXIT", (90, 160, 90)),
+        ]
+        self.selftest_buttons = {}
+        btn_w, btn_h = 280, 110
+        gap = 30
+        total_w = len(actions) * btn_w + (len(actions) - 1) * gap
+        sx = (self.w - total_w) // 2
+        sy = self.h - 230
+        for i, (key, label, color) in enumerate(actions):
+            x = sx + i * (btn_w + gap)
+            rect = pygame.Rect(x, sy, btn_w, btn_h)
+            self.selftest_buttons[key] = rect
+            pygame.draw.rect(self.screen, color, rect, border_radius=14)
+            pygame.draw.rect(self.screen, (240, 240, 240), rect, width=2, border_radius=14)
+            t = self.font_sm.render(label, True, (255, 255, 255))
+            self.screen.blit(t, t.get_rect(center=rect.center))
+
+        # Status flash line
+        if st.status_message:
+            t = self.font_sm.render(st.status_message, True, (255, 240, 160))
+            self.screen.blit(t, t.get_rect(midbottom=(self.w // 2, sy - 20)))
+
+        # Hint
+        hint = self.font_xs.render("EXIT 를 누르면 ATTRACT 로 복귀합니다.", True, (160, 160, 170))
+        self.screen.blit(hint, hint.get_rect(midbottom=(self.w // 2, self.h - 20)))
+
+    def _draw_selftest_confirm(self) -> None:
+        st = self.game.selftest
+        if not st.confirm:
+            return
+        overlay = pygame.Surface((self.w, self.h))
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(180)
+        self.screen.blit(overlay, (0, 0))
+
+        bw, bh = 900, 360
+        box = pygame.Rect((self.w - bw) // 2, (self.h - bh) // 2, bw, bh)
+        pygame.draw.rect(self.screen, (30, 30, 40), box, border_radius=20)
+        pygame.draw.rect(self.screen, (200, 200, 220), box, width=3, border_radius=20)
+
+        title = self.font_md.render("확인", True, (255, 200, 200))
+        self.screen.blit(title, title.get_rect(midtop=(box.centerx, box.y + 30)))
+        msg = self.font_sm.render(st.confirm.prompt, True, (240, 240, 240))
+        self.screen.blit(msg, msg.get_rect(center=(box.centerx, box.centery - 20)))
+
+        btn_w, btn_h = 240, 90
+        gap = 60
+        sx = box.centerx - btn_w - gap // 2
+        sy = box.y + bh - btn_h - 40
+        no_rect = pygame.Rect(sx, sy, btn_w, btn_h)
+        yes_rect = pygame.Rect(sx + btn_w + gap, sy, btn_w, btn_h)
+        self.selftest_buttons["CONFIRM_NO"] = no_rect
+        self.selftest_buttons["CONFIRM_YES"] = yes_rect
+
+        pygame.draw.rect(self.screen, (90, 90, 110), no_rect, border_radius=12)
+        pygame.draw.rect(self.screen, (200, 60, 60), yes_rect, border_radius=12)
+        pygame.draw.rect(self.screen, (240, 240, 240), no_rect, width=2, border_radius=12)
+        pygame.draw.rect(self.screen, (240, 240, 240), yes_rect, width=2, border_radius=12)
+        n = self.font_sm.render("취소", True, (240, 240, 240))
+        y = self.font_sm.render("확인", True, (255, 255, 255))
+        self.screen.blit(n, n.get_rect(center=no_rect.center))
+        self.screen.blit(y, y.get_rect(center=yes_rect.center))
+
+    def _draw_selftest_time_set(self) -> None:
+        st = self.game.selftest
+        self.screen.fill((14, 16, 24))
+        header = self.font_lg.render("시각 설정", True, (240, 240, 240))
+        self.screen.blit(header, header.get_rect(midtop=(self.w // 2, 80)))
+
+        labels = ["YEAR", "MONTH", "DAY", "HOUR", "MINUTE"]
+        values = st.time_fields.values()
+        col_w = 260
+        total_w = len(labels) * col_w
+        sx = (self.w - total_w) // 2
+        sy = 280
+        self.time_buttons = {}
+
+        for i, (lab, val) in enumerate(zip(labels, values)):
+            x = sx + i * col_w
+            lt = self.font_sm.render(lab, True, (180, 180, 200))
+            self.screen.blit(lt, lt.get_rect(midtop=(x + col_w // 2, sy)))
+
+            up = pygame.Rect(x + col_w // 2 - 60, sy + 60, 120, 80)
+            box = pygame.Rect(x + col_w // 2 - 100, sy + 160, 200, 110)
+            dn = pygame.Rect(x + col_w // 2 - 60, sy + 290, 120, 80)
+            self.time_buttons[f"UP_{i}"] = up
+            self.time_buttons[f"DN_{i}"] = dn
+
+            pygame.draw.rect(self.screen, (60, 100, 160), up, border_radius=10)
+            pygame.draw.rect(self.screen, (60, 100, 160), dn, border_radius=10)
+            pygame.draw.rect(self.screen, (30, 32, 44), box, border_radius=10)
+            pygame.draw.rect(self.screen, (200, 200, 220), box, width=2, border_radius=10)
+
+            uplab = self.font_md.render("▲", True, (255, 255, 255))
+            dnlab = self.font_md.render("▼", True, (255, 255, 255))
+            vlab = self.font_lg.render(str(val).zfill(2 if i > 0 else 4), True, (240, 240, 240))
+            self.screen.blit(uplab, uplab.get_rect(center=up.center))
+            self.screen.blit(dnlab, dnlab.get_rect(center=dn.center))
+            self.screen.blit(vlab, vlab.get_rect(center=box.center))
+
+        # Bottom action buttons
+        btn_w, btn_h = 280, 110
+        gap = 60
+        sx2 = (self.w - 2 * btn_w - gap) // 2
+        sy2 = self.h - 200
+        cancel = pygame.Rect(sx2, sy2, btn_w, btn_h)
+        apply_ = pygame.Rect(sx2 + btn_w + gap, sy2, btn_w, btn_h)
+        self.time_buttons["CANCEL"] = cancel
+        self.time_buttons["APPLY"] = apply_
+        pygame.draw.rect(self.screen, (90, 90, 110), cancel, border_radius=12)
+        pygame.draw.rect(self.screen, (60, 160, 90), apply_, border_radius=12)
+        pygame.draw.rect(self.screen, (240, 240, 240), cancel, width=2, border_radius=12)
+        pygame.draw.rect(self.screen, (240, 240, 240), apply_, width=2, border_radius=12)
+        ct = self.font_sm.render("취소", True, (240, 240, 240))
+        at = self.font_sm.render("적용", True, (255, 255, 255))
+        self.screen.blit(ct, ct.get_rect(center=cancel.center))
+        self.screen.blit(at, at.get_rect(center=apply_.center))
+
+        # Preview
+        preview = self.font_sm.render(st.time_fields.to_iso(), True, (200, 220, 200))
+        self.screen.blit(preview, preview.get_rect(midbottom=(self.w // 2, sy2 - 20)))
+
+    def _handle_selftest_click(self, x: int, y: int) -> None:
+        st = self.game.selftest
+        if st.submode == SUBMODE_TIME_SET:
+            for key, rect in self.time_buttons.items():
+                if rect.collidepoint(x, y):
+                    if key == "APPLY":
+                        st.apply_time()
+                    elif key == "CANCEL":
+                        st.cancel_time()
+                    elif key.startswith("UP_"):
+                        st.time_fields.adjust(int(key[3:]), +1)
+                    elif key.startswith("DN_"):
+                        st.time_fields.adjust(int(key[3:]), -1)
+                    return
+            return
+
+        if st.submode == SUBMODE_CONFIRM:
+            yes = self.selftest_buttons.get("CONFIRM_YES")
+            no = self.selftest_buttons.get("CONFIRM_NO")
+            if yes and yes.collidepoint(x, y):
+                st.confirm_yes()
+            elif no and no.collidepoint(x, y):
+                st.confirm_no()
+            return
+
+        # Main submode
+        for key, rect in self.selftest_buttons.items():
+            if not rect.collidepoint(x, y):
+                continue
+            if key == "RESET":
+                st.request_reset()
+            elif key == "TIME":
+                st.request_time_set()
+            elif key == "SHUTDOWN":
+                st.request_shutdown()
+            elif key == "REBOOT":
+                st.request_reboot()
+            elif key == "EXIT":
+                st.exit()
+            return

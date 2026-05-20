@@ -7,13 +7,14 @@ Wire protocol (newline-delimited ASCII over Serial @ 115200 baud):
     PLAY <colors> <on_ms> <off_ms>   sequence playback (colors: RBYG chars)
     ALL <ON|OFF>
     ATTRACT <ON|OFF>
-    ARM <colors> <timeout_ms>    enable input for given active colors
+    ARM <colors> <timeout_ms>    enable rejection blink for inactive colors
     DISARM
     SELFTEST
     VERSION
 
   MCU -> MPU
-    BTN <color> <ts_ms>          button pressed event (async)
+    BTN <color> <ts_ms>          button pressed event (always emitted)
+    REL <color> <ts_ms>          button released event (always emitted)
     SEQDONE                      sequence playback complete
     OK
     ERR <message>
@@ -47,6 +48,7 @@ class RPCBridge:
         self._stop = threading.Event()
         self._ack_q: "queue.Queue[str]" = queue.Queue()
         self._button_cb: Optional[Callable[[str, int], None]] = None
+        self._release_cb: Optional[Callable[[str, int], None]] = None
         self._seqdone_cb: Optional[Callable[[], None]] = None
         self._connected = False
 
@@ -75,6 +77,9 @@ class RPCBridge:
 
     def on_button(self, cb: Callable[[str, int], None]) -> None:
         self._button_cb = cb
+
+    def on_button_release(self, cb: Callable[[str, int], None]) -> None:
+        self._release_cb = cb
 
     def on_sequence_done(self, cb: Callable[[], None]) -> None:
         self._seqdone_cb = cb
@@ -118,14 +123,17 @@ class RPCBridge:
             return
         parts = line.split()
         tag = parts[0]
-        if tag == "BTN" and len(parts) >= 3:
+        if tag in ("BTN", "REL") and len(parts) >= 3:
             color = CHAR_TO_COLOR.get(parts[1].upper())
             try:
                 ts = int(parts[2])
             except ValueError:
                 return
-            if color and self._button_cb:
-                self._button_cb(color, ts)
+            if not color:
+                return
+            cb = self._button_cb if tag == "BTN" else self._release_cb
+            if cb:
+                cb(color, ts)
         elif tag == "SEQDONE":
             if self._seqdone_cb:
                 self._seqdone_cb()
@@ -174,6 +182,7 @@ class SimulatedBridge:
     def __init__(self, logger=None):
         self.logger = logger
         self._button_cb: Optional[Callable[[str, int], None]] = None
+        self._release_cb: Optional[Callable[[str, int], None]] = None
         self._seqdone_cb: Optional[Callable[[], None]] = None
         self._seqdone_at: Optional[float] = None
         self._connected = True
@@ -192,12 +201,19 @@ class SimulatedBridge:
     def on_button(self, cb):
         self._button_cb = cb
 
+    def on_button_release(self, cb):
+        self._release_cb = cb
+
     def on_sequence_done(self, cb):
         self._seqdone_cb = cb
 
     def emit_button(self, color: str) -> None:
         if self._button_cb:
             self._button_cb(color, int(time.monotonic() * 1000))
+
+    def emit_button_release(self, color: str) -> None:
+        if self._release_cb:
+            self._release_cb(color, int(time.monotonic() * 1000))
 
     def tick(self) -> None:
         if self._seqdone_at is not None and time.monotonic() >= self._seqdone_at:

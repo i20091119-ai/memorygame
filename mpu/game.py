@@ -2,10 +2,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from .config import COLORS, AppConfig
+from .selftest import SelfTest
 from .sequence_gen import SequenceGenerator
+
+SELFTEST_HOLD_COMBO: Set[str] = {"RED", "GREEN"}
+SELFTEST_HOLD_SEC: float = 5.0
 
 
 class State(Enum):
@@ -49,11 +53,16 @@ class Game:
         self.nickname_buffer: str = ""
         self.nickname_started_at: float = 0.0
         self.show_idx: int = 0
-        self.selftest_result: str = ""
         self.error_message: str = ""
+
+        self.held: Set[str] = set()
+        self.combo_hold_started_at: Optional[float] = None
+        self.selftest: SelfTest = SelfTest(cfg, bridge, scoreboard, logger)
 
         bridge.on_button(self._on_button)
         bridge.on_sequence_done(self._on_sequence_done)
+        if hasattr(bridge, "on_button_release"):
+            bridge.on_button_release(self._on_button_release)
 
     def start(self) -> None:
         self.logger.info("app_start ver=1.2.0")
@@ -63,6 +72,17 @@ class Game:
         self.logger.info("state_change to=%s", state.name)
         self.state = state
         self.state_entered_at = time.monotonic()
+
+    def _enter_selftest(self) -> None:
+        self.combo_hold_started_at = None
+        self.held.clear()
+        self._enter(State.SELFTEST)
+        self.selftest.enter(exit_cb=self._enter_attract)
+
+    def trigger_selftest(self) -> None:
+        """Developer shortcut: enter self-test mode immediately."""
+        if self.state == State.ATTRACT:
+            self._enter_selftest()
 
     def _enter_attract(self) -> None:
         try:
@@ -164,12 +184,35 @@ class Game:
 
     def _on_button(self, color: str, ts_ms: int) -> None:
         self._note_activity()
+        self.held.add(color)
         if self.state == State.ATTRACT:
-            self._enter_ready()
+            if (
+                SELFTEST_HOLD_COMBO.issubset(self.held)
+                and self.combo_hold_started_at is None
+            ):
+                self.combo_hold_started_at = time.monotonic()
             return
         if self.state == State.USER_INPUT:
             self._handle_user_input(color)
             return
+        if self.state == State.SELFTEST:
+            self.selftest.on_button(color)
+            return
+
+    def _on_button_release(self, color: str, ts_ms: int) -> None:
+        was_held = color in self.held
+        self.held.discard(color)
+        if not SELFTEST_HOLD_COMBO.issubset(self.held):
+            self.combo_hold_started_at = None
+        # In ATTRACT, transition to READY when the player releases all buttons
+        # without engaging the self-test combo. This lets the combo gesture be
+        # detected without prematurely starting the game.
+        if (
+            was_held
+            and self.state == State.ATTRACT
+            and not self.held
+        ):
+            self._enter_ready()
 
     def _on_sequence_done(self) -> None:
         if self.state == State.SHOW_SEQUENCE:
@@ -277,7 +320,17 @@ class Game:
                 self._commit_score("ANONYMOUS")
             return
 
+        if self.state == State.SELFTEST:
+            self.selftest.tick()
+            return
+
         if self.state == State.ATTRACT:
+            if (
+                self.combo_hold_started_at is not None
+                and SELFTEST_HOLD_COMBO.issubset(self.held)
+                and now - self.combo_hold_started_at >= SELFTEST_HOLD_SEC
+            ):
+                self._enter_selftest()
             return
 
     def countdown_remaining_sec(self) -> int:
